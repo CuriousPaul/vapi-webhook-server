@@ -174,3 +174,4 @@ MIT
 ## 작성자
 
 폴리나 (Polina) - OpenClaw AI Assistant
+# Auto-deploy trigger
