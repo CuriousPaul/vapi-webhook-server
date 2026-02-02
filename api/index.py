@@ -429,33 +429,43 @@ def handle_end_of_call(data: dict) -> Response:
 @app.route('/api/webhook/vapi/tts', methods=['POST'])
 def custom_tts_endpoint():
     """
-    Channel.io TTS 엔드포인트
+    Channel.io TTS 엔드포인트 (Vapi Custom Voice Provider)
     
     Vapi가 호출하여 한국어 텍스트를 음성으로 변환
+    Vapi 공식 형식: {"message": {"type": "voice-request", "text": "...", "sampleRate": ...}}
     """
     if not CHANNEL_TTS_AVAILABLE:
         return jsonify({"error": "Channel TTS not available"}), 503
     
     try:
         data = request.get_json()
+        logger.info(f"[TTS] Raw request: {json.dumps(data)[:200]}")
         
-        text = data.get('text', '')
-        latency_level = int(data.get('latencyLevel', 3))
+        # Vapi 공식 형식 파싱
+        message = data.get('message', {})
         
-        if not text:
+        if message.get('type') != 'voice-request':
+            return jsonify({"error": "Invalid message type"}), 400
+        
+        text = message.get('text', '')
+        sample_rate = message.get('sampleRate', 24000)
+        
+        if not text or not text.strip():
             return jsonify({"error": "No text provided"}), 400
         
-        logger.info(f"[TTS Request] Text: {text[:50]}...")
+        logger.info(f"[TTS] Synthesizing: text={text[:50]}..., rate={sample_rate}Hz")
         
-        # Channel.io TTS로 음성 생성
-        mulaw_audio = channel_tts.generate_speech_for_vapi(text, latency_level)
+        # Channel.io TTS로 PCM 생성 후 μ-law 변환
+        mulaw_audio = channel_tts.generate_speech_for_vapi(text, latency_level=3)
         
+        logger.info(f"[TTS] Generated {len(mulaw_audio)} bytes of μ-law audio")
+        
+        # Vapi 요구사항: application/octet-stream + Raw PCM bytes
         return Response(
             mulaw_audio,
-            mimetype='audio/basic',
+            mimetype='application/octet-stream',
             headers={
-                'Content-Length': str(len(mulaw_audio)),
-                'Content-Disposition': 'inline; filename="speech.ulaw"'
+                'Content-Length': str(len(mulaw_audio))
             }
         )
     
