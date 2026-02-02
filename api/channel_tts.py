@@ -54,7 +54,7 @@ def generate_speech_stream(
     
     headers = {
         "Content-Type": "application/json",
-        "Accept": "audio/mpeg"  # 스트리밍 응답
+        "Accept": "audio/pcm"  # PCM 형식 요청
     }
     
     try:
@@ -104,42 +104,80 @@ def generate_speech(
     Raises:
         requests.RequestException: API 호출 실패
     """
-    chunks = []
-    for chunk in generate_speech_stream(text, latency_level, output_format):
-        chunks.append(chunk)
+    url = f"{CHANNELTTS_API_BASE}/v1/text-to-speech/{CHANNELTTS_VOICE_ID}/stream"
     
-    audio_data = b''.join(chunks)
-    logger.info(f"[ChannelTTS] Generated {len(audio_data)} bytes of audio")
+    params = {
+        "optimize_streaming_latency": latency_level
+    }
     
-    return audio_data
+    payload = {
+        "text": text,
+        "model_id": "default",
+        "voice_settings": {},
+        "output_format": output_format
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        logger.info(f"[ChannelTTS] Generating speech for: {text[:50]}...")
+        
+        # stream=False로 한 번에 받기
+        response = requests.post(
+            url,
+            params=params,
+            json=payload,
+            headers=headers,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        audio_data = response.content
+        logger.info(f"[ChannelTTS] Generated {len(audio_data)} bytes of audio")
+        
+        return audio_data
+    
+    except requests.RequestException as e:
+        logger.error(f"[ChannelTTS] API request failed: {e}")
+        raise
 
 
 def linear_to_mulaw(sample: int) -> int:
     """
     16-bit linear PCM → μ-law 변환 (단일 샘플)
-    G.711 μ-law 알고리즘 구현
+    표준 G.711 μ-law 알고리즘 (ITU-T G.711)
     """
-    MULAW_MAX = 0x1FFF
-    MULAW_BIAS = 33
+    BIAS = 0x84  # 132
+    CLIP = 32635
     
-    # Get sign and magnitude
-    sign = (sample >> 8) & 0x80
-    if sign:
+    # Get sign
+    sign = 0x80 if sample < 0 else 0x00
+    
+    # Get magnitude
+    if sample < 0:
         sample = -sample
-    if sample > MULAW_MAX:
-        sample = MULAW_MAX
     
-    sample = sample + MULAW_BIAS
+    if sample > CLIP:
+        sample = CLIP
+    
+    sample = sample + BIAS
+    
+    # Find exponent
     exponent = 7
-    for shift in range(7, -1, -1):
-        if sample >= (256 << shift):
-            exponent = shift
+    for exp_lut in [0x4000, 0x2000, 0x1000, 0x800, 0x400, 0x200, 0x100, 0x80]:
+        if sample >= exp_lut:
             break
+        exponent -= 1
     
+    # Get mantissa
     mantissa = (sample >> (exponent + 3)) & 0x0F
-    mulaw = ~(sign | (exponent << 4) | mantissa)
     
-    return mulaw & 0xFF
+    # Combine and invert
+    mulaw_byte = ~(sign | (exponent << 4) | mantissa)
+    
+    return mulaw_byte & 0xFF
 
 
 def resample_pcm(pcm_data: bytes, from_rate: int, to_rate: int) -> bytes:
