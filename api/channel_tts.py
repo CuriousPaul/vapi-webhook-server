@@ -119,7 +119,7 @@ def convert_pcm_to_mulaw(pcm_data: bytes, sample_rate: int = 24000) -> bytes:
     PCM 오디오를 μ-law (G.711) 형식으로 변환
     Vapi는 전화 통화에 μ-law를 사용
     
-    ffmpeg를 사용하여 변환:
+    Python audioop 모듈 사용 (Vercel serverless 호환):
     - PCM s16le (16-bit signed little-endian) → μ-law
     - 24kHz → 8kHz 리샘플링 (전화 통화 표준)
     
@@ -131,49 +131,28 @@ def convert_pcm_to_mulaw(pcm_data: bytes, sample_rate: int = 24000) -> bytes:
         μ-law 오디오 데이터 (bytes, 8kHz, mono)
     """
     try:
-        # ffmpeg 명령어
-        # -f s16le: 입력 포맷 (16-bit signed little-endian PCM)
-        # -ar 24000: 입력 샘플레이트
-        # -ac 1: 모노 (1채널)
-        # -i pipe:0: stdin에서 입력
-        # -f mulaw: 출력 포맷 (μ-law)
-        # -ar 8000: 출력 샘플레이트 (전화 통화 표준)
-        # -ac 1: 모노 출력
-        # pipe:1: stdout으로 출력
+        import audioop
         
-        cmd = [
-            'ffmpeg',
-            '-f', 's16le',
-            '-ar', str(sample_rate),
-            '-ac', '1',
-            '-i', 'pipe:0',
-            '-f', 'mulaw',
-            '-ar', '8000',
-            '-ac', '1',
-            'pipe:1'
-        ]
+        # 1. Resample: 24kHz → 8kHz (전화 통화 표준)
+        if sample_rate != 8000:
+            resampled_data, _ = audioop.ratecv(
+                pcm_data,
+                2,  # sample width (16-bit = 2 bytes)
+                1,  # channels (mono)
+                sample_rate,  # input rate (24000)
+                8000,  # output rate (8000)
+                None  # state
+            )
+            logger.info(f"[ChannelTTS] Resampled: {len(pcm_data)} → {len(resampled_data)} bytes ({sample_rate}Hz → 8kHz)")
+        else:
+            resampled_data = pcm_data
         
-        process = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        
-        mulaw_data, stderr = process.communicate(input=pcm_data, timeout=10)
-        
-        if process.returncode != 0:
-            logger.error(f"[ChannelTTS] ffmpeg error: {stderr.decode('utf-8', errors='ignore')}")
-            raise RuntimeError(f"ffmpeg conversion failed with code {process.returncode}")
+        # 2. PCM (16-bit) → μ-law
+        mulaw_data = audioop.lin2ulaw(resampled_data, 2)  # 2 = 16-bit
         
         logger.info(f"[ChannelTTS] PCM → μ-law: {len(pcm_data)} → {len(mulaw_data)} bytes")
         
         return mulaw_data
-    
-    except subprocess.TimeoutExpired:
-        logger.error("[ChannelTTS] ffmpeg timeout")
-        process.kill()
-        raise
     
     except Exception as e:
         logger.error(f"[ChannelTTS] PCM → μ-law conversion failed: {e}")
